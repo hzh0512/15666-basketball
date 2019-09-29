@@ -1,8 +1,8 @@
-# (TODO: your game's title)
+# Basketball
 
-Author: (TODO: your name)
+Author: Zihao He
 
-Design: (TODO: In two sentences or fewer, describe what is new and interesting about your game.)
+Design: Play basketball on your computer! See how many points you can get in 60 seconds.
 
 Screen Shot:
 
@@ -10,10 +10,10 @@ Screen Shot:
 
 How To Play:
 
-(TODO: describe the controls and (if needed) goals/strategy.)
+Just left click to aim and shoot the basketball. You will change the position after each point. Get as many points as possible in 60 seconds!
 
 Sources:
 
-(TODO: fill in information about the sources of any **artwork** or **sounds** you used in the game that you did not create yourself. Feel free to also credit yourself for things you did make.)
+The basketball board was found [here](https://free3d.com/3d-model/old-basketball-net-26850.html). The ball model was got from the class demo game 'Roll'. The grass model was got from the class demo 'Watch'.
 
 This game was built with [NEST](NEST.md).

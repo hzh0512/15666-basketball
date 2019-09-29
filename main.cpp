@@ -53,11 +53,11 @@ int main(int argc, char **argv) {
 
 	//create window:
 	SDL_Window *window = SDL_CreateWindow(
-		"gp19 Sphere Roller", //TODO: remember to set a title for your game!
+		"basketball",
 		SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
-		800, 540, //TODO: modify window size if you'd like
+		800, 600,
 		SDL_WINDOW_OPENGL
-		| SDL_WINDOW_RESIZABLE //uncomment to allow resizing
+//		| SDL_WINDOW_RESIZABLE //uncomment to allow resizing
 		| SDL_WINDOW_ALLOW_HIGHDPI //uncomment for full resolution on high-DPI screens
 	);
 
@@ -98,21 +98,8 @@ int main(int argc, char **argv) {
 	//------------ load resources --------------
 	call_load_functions();
 
-	//------------ create game mode + make current --------------
-	if (argc > 1) {
-		int32_t level = -1;
-		if (argc >= 2) level = std::stoi(argv[1]);
-		if (argc != 2 || level < 0 || level >= int32_t(roll_levels->size())) {
-			std::cerr << "Usage:\n\t" << argv[0] << " [level number]" << std::endl;
-		}
-		auto level_iter = roll_levels->begin();
-		for (int32_t i = 0; i < level; ++i) {
-			++level_iter;
-		}
-		Mode::set_current(std::make_shared< RollMode >(*level_iter));
-	} else {
-		Mode::set_current(std::make_shared< RollMode >(roll_levels->front()));
-	}
+	//------------ create game mode --------------
+    Mode::set_current(std::make_shared< RollMode >());
 
 	//------------ main loop ------------
 

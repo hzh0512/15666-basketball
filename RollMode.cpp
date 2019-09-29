@@ -8,6 +8,7 @@
 #include "Sound.hpp"
 #include "collide.hpp"
 #include "gl_errors.hpp"
+#include <sstream>
 
 //for glm::pow(quaternion, float):
 #include <glm/gtx/quaternion.hpp>
@@ -15,160 +16,149 @@
 #include <algorithm>
 #include <iostream>
 
+//used for lookup later:
+Scene::Transform *ball_transform;
+
+struct MeshCollider {
+    MeshCollider(Scene::Transform *transform_, Mesh const &mesh_, MeshBuffer const &buffer_) : transform(transform_), mesh(&mesh_), buffer(&buffer_) { }
+    Scene::Transform *transform;
+    Mesh const *mesh;
+    MeshBuffer const *buffer;
+};
+
+std::vector< MeshCollider > mesh_colliders;
+
+GLuint roll_meshes_for_lit_color_texture_program = 0;
+
 Load< SpriteAtlas > trade_font_atlas(LoadTagDefault, []() -> SpriteAtlas const * {
 	return new SpriteAtlas(data_path("trade-font"));
 });
 
-RollMode::RollMode(RollLevel const &level_) : start(level_), level(level_) {
-	restart();
+//Load the meshes used in Sphere Roll levels:
+Load< MeshBuffer > roll_meshes(LoadTagDefault, []() -> MeshBuffer * {
+    MeshBuffer *ret = new MeshBuffer(data_path("basketball.pnct"));
+
+    //Build vertex array object for the program we're using to shade these meshes:
+    roll_meshes_for_lit_color_texture_program = ret->make_vao_for_program(lit_color_texture_program->program);
+
+    return ret;
+});
+
+Load< Scene > roll_scene(LoadTagLate, []() -> Scene const * {
+    Scene *ret = new Scene();
+
+    ret->load(data_path("basketball.scene"), [](Scene &scene,
+            Scene::Transform *transform, std::string const &mesh_name){
+        Mesh const *mesh = &roll_meshes->lookup(mesh_name);
+        scene.drawables.emplace_back(transform);
+        Scene::Drawable::Pipeline &pipeline = scene.drawables.back().pipeline;
+
+        //set up drawable to draw mesh from buffer:
+        pipeline = lit_color_texture_program_pipeline;
+        pipeline.vao = roll_meshes_for_lit_color_texture_program;
+        pipeline.type = mesh->type;
+        pipeline.start = mesh->start;
+        pipeline.count = mesh->count;
+
+        if (mesh_name != "Sphere") {
+            mesh_colliders.emplace_back(transform, *mesh, *roll_meshes);
+        } else {
+            ball_transform = transform;
+        }
+    });
+
+    return ret;
+});
+
+RollMode::RollMode() {
+    ball_vel.x = 0.f;
+    ball_vel.y = 0.f;
+    ball_vel.z = 0.f;
+    *ball_transform = *roll_scene->cameras[level].transform;
+    ball_transform->position.z -= 1.5f;
+    ball_transform->scale.x = 0.3f;
+    ball_transform->scale.y = 0.3f;
+    ball_transform->scale.z = 0.3f;
 }
 
 RollMode::~RollMode() {
 }
 
 bool RollMode::handle_event(SDL_Event const &evt, glm::uvec2 const &window_size) {
-	if (evt.type == SDL_KEYDOWN && evt.key.keysym.sym == SDLK_SPACE) {
-		DEBUG_fly = !DEBUG_fly;
-		return true;
-	}
-	if (evt.type == SDL_KEYDOWN && evt.key.keysym.sym == SDLK_BACKSPACE) {
-		restart();
-		return true;
-	}
-	if (evt.type == SDL_KEYDOWN && evt.key.keysym.sym == SDLK_RETURN) {
-		if (won) {
-			//advance to next level:
-			std::list< RollLevel >::const_iterator current = roll_levels->begin();
-			while (&*current != &start) {
-				++current;
-			}
-			assert(current != roll_levels->end());
-	
-			++current;
-			if (current == roll_levels->end()) current = roll_levels->begin();
-	
-			//launch a new RollMode with the next level:
-			Mode::set_current(std::make_shared< RollMode >(*current));
-		}
-		return true;
-	}
+    if (evt.type == SDL_MOUSEBUTTONDOWN && ball_ready && ti > 0.f) {
+        if (!start)
+            start = true;
 
-	if (evt.type == SDL_KEYDOWN && evt.key.keysym.sym == SDLK_1) {
-		DEBUG_show_geometry = !DEBUG_show_geometry;
-		return true;
-	}
-	if (evt.type == SDL_KEYDOWN && evt.key.keysym.sym == SDLK_2) {
-		DEBUG_show_collision = !DEBUG_show_collision;
-		return true;
-	}
+        ball_ready = false;
+        float v = 12.f, w = 800.f, h = 600.f;
+        float x = evt.button.x;
+        float y = evt.button.y;
 
-
-	if (evt.type == SDL_KEYDOWN || evt.type == SDL_KEYUP) {
-		if (evt.key.keysym.scancode == SDL_SCANCODE_A) {
-			controls.left = (evt.type == SDL_KEYDOWN);
-			return true;
-		} else if (evt.key.keysym.scancode == SDL_SCANCODE_D) {
-			controls.right = (evt.type == SDL_KEYDOWN);
-			return true;
-		} else if (evt.key.keysym.scancode == SDL_SCANCODE_W) {
-			controls.forward = (evt.type == SDL_KEYDOWN);
-			return true;
-		} else if (evt.key.keysym.scancode == SDL_SCANCODE_S) {
-			controls.backward = (evt.type == SDL_KEYDOWN);
-			return true;
-		}
-	}
-
-	if (evt.type == SDL_MOUSEMOTION) {
-		if (evt.motion.state & SDL_BUTTON(SDL_BUTTON_LEFT)) {
-			//based on trackball camera control from ShowMeshesMode:
-			//figure out the motion (as a fraction of a normalized [-a,a]x[-1,1] window):
-			glm::vec2 delta;
-			delta.x = evt.motion.xrel / float(window_size.x) * 2.0f;
-			delta.x *= float(window_size.y) / float(window_size.x);
-			delta.y = evt.motion.yrel / float(window_size.y) * -2.0f;
-
-			level.player.view_azimuth -= delta.x;
-			level.player.view_elevation -= delta.y;
-
-			level.player.view_azimuth /= 2.0f * 3.1415926f;
-			level.player.view_azimuth -= std::round(level.player.view_azimuth);
-			level.player.view_azimuth *= 2.0f * 3.1415926f;
-
-			level.player.view_elevation = std::max(-85.0f / 180.0f * 3.1415926f, level.player.view_elevation);
-			level.player.view_elevation = std::min( 85.0f / 180.0f * 3.1415926f, level.player.view_elevation);
-
-			return true;
-		}
-	}
+        auto pos = roll_scene->cameras[level].transform->position;
+        auto diff = glm::vec3(0, x/w*13.8f-6.9f, 13.f-y/h*5.5f) - pos;
+        if (level == 2) {
+            diff = glm::vec3(-(x/w*13.8f-6.9f)*0.7, (x/w*13.8f-5.8f)*0.7, 13.f-y/h*5.5f) - pos;
+        } else if (level == 1) {
+            diff = glm::vec3((x/w*13.8f-6.9f)*0.7, (x/w*13.8f-6.9f)*0.7, 13.f-y/h*5.5f) - pos;
+        }
+        auto r = diff / sqrt(diff.x * diff.x + diff.y * diff.y + diff.z *
+                                                                 diff.z);
+        ball_vel = v * r;
+        return true;
+    }
 	
 	return false;
 }
 
 void RollMode::update(float elapsed) {
 	//NOTE: turn this on to fly the sphere instead of rolling it -- makes collision debugging easier
+	if (ball_transform->position.z < 0.5f) {
+        ball_vel.x = 0.f;
+        ball_vel.y = 0.f;
+        ball_vel.z = 0.f;
+        *ball_transform = *roll_scene->cameras[level].transform;
+        ball_transform->position.z -= 1.5f;
+        ball_transform->scale.x = 0.3f;
+        ball_transform->scale.y = 0.3f;
+        ball_transform->scale.z = 0.3f;
+	    ball_ready = true;
+	    hit = false;
+	}
+
+	if (start && ti > 0.f) {
+	    ti = ti - elapsed;
+	    if (ti <= 0.f) {
+	        ti = 0.f;
+	    }
+	}
+
+	const auto goal = glm::vec3(0.7f, 0.f, 4.3f);
+	if (!hit && glm::distance(ball_transform->position, goal) < 0.5f) {
+	    hit = true;
+	    score++;
+	    level = (level + 1) % 3;
+	}
+
+    if (ball_ready) {
+        return;
+    }
 	{ //player motion:
-		//build a shove from controls:
-
-		glm::vec3 shove = glm::vec3(0.0f);
-		if (controls.left) shove.x -= 1.0f;
-		if (controls.right) shove.x += 1.0f;
-		if (controls.forward) shove.y += 1.0f;
-		if (controls.backward) shove.y -= 1.0f;
-
-		if (shove != glm::vec3(0.0f)) {
-			if (DEBUG_fly) {
-				//DEBUG: fly mode -- shove is fully camera-relative:
-				glm::mat3 frame = glm::mat3_cast(
-					glm::angleAxis( level.player.view_azimuth, glm::vec3(0.0f, 0.0f, 1.0f) )
-					* glm::angleAxis(-level.player.view_elevation + 0.5f * 3.1415926f, glm::vec3(1.0f, 0.0f, 0.0f) ));
-				shove = frame * glm::vec3(shove.x, 0.0f, -shove.y);
-			} else {
-				//make shove relative to camera direction (but ignore up/down tilt):
-				shove = glm::normalize(shove);
-				float ca = std::cos(level.player.view_azimuth);
-				float sa = std::sin(level.player.view_azimuth);
-				shove = glm::vec3(ca, sa, 0.0f) * shove.x + glm::vec3(-sa, ca, 0.0f) * shove.y;
-			}
-		}
-
-		shove *= 10.0f;
-
-		//update player using shove:
-
-		//get references to player position/rotation because those are convenient to have:
-		glm::vec3 &position = level.player.transform->position;
-		glm::vec3 &velocity = level.player.velocity;
-		glm::quat &rotation = level.player.transform->rotation;
-		glm::vec3 &rotational_velocity = level.player.rotational_velocity;
-
-		rotational_velocity *= std::pow(0.5f, elapsed / 2.0f);
-
-		if (DEBUG_fly) {
-			//DEBUG: fly mode -- no gravity:
-			velocity = glm::mix(shove, velocity, std::pow(0.5f, elapsed / 0.25f));
-		} else {
-			velocity = glm::vec3(
-				//decay existing velocity toward shove:
-				glm::mix(glm::vec2(shove), glm::vec2(velocity), std::pow(0.5f, elapsed / 0.25f)),
-				//also: gravity
-				velocity.z - 10.0f * elapsed
-			);
-		}
-
-		//set up a new draw_lines object for DEBUG drawing:
-		if (!DEBUG_draw_lines) {
-			DEBUG_draw_lines.reset(new DrawLines(glm::mat4(1.0f)));
-		}
+        const glm::vec3 rot_axis = glm::vec3(0.5, 0.5, 0.707);
+		glm::vec3 &position = ball_transform->position;
+        ball_angle += elapsed * ball_angle_vel;
+        ball_angle_vel *= pow(0.5, elapsed / 1.f);
+        ball_transform->rotation = glm::quat(cos(ball_angle), sin(ball_angle)*rot_axis.x,
+                                   sin(ball_angle)*rot_axis.y, sin(ball_angle)*rot_axis.z);
+        ball_vel.z -= 9.8f * elapsed;
 		
 		//collide against level:
 		float remain = elapsed;
 		for (int32_t iter = 0; iter < 10; ++iter) {
 			if (remain == 0.0f) break;
 
-			float sphere_radius = 1.0f; //player sphere is radius-1
+			float sphere_radius = 0.3f;
 			glm::vec3 sphere_sweep_from = position;
-			glm::vec3 sphere_sweep_to = position + velocity * remain;
+			glm::vec3 sphere_sweep_to = position + ball_vel * remain;
 
 			glm::vec3 sphere_sweep_min = glm::min(sphere_sweep_from, sphere_sweep_to) - glm::vec3(sphere_radius);
 			glm::vec3 sphere_sweep_max = glm::max(sphere_sweep_from, sphere_sweep_to) + glm::vec3(sphere_radius);
@@ -177,7 +167,7 @@ void RollMode::update(float elapsed) {
 			float collision_t = 1.0f;
 			glm::vec3 collision_at = glm::vec3(0.0f);
 			glm::vec3 collision_out = glm::vec3(0.0f);
-			for (auto const &collider : level.mesh_colliders) {
+			for (auto const &collider : mesh_colliders) {
 				glm::mat4x3 collider_to_world = collider.transform->make_local_to_world();
 
 				{ //Early discard:
@@ -198,16 +188,6 @@ void RollMode::update(float elapsed) {
 
 					//(2) check if bounding boxes overlap:
 					bool can_skip = !collide_AABB_vs_AABB(sphere_sweep_min, sphere_sweep_max, world_min, world_max);
-
-					//draw to indicate result of check:
-					if (iter == 0 && DEBUG_draw_lines && DEBUG_show_geometry) {
-						DEBUG_draw_lines->draw_box(glm::mat4x3(
-							0.5f * (world_max.x - world_min.x), 0.0f, 0.0f,
-							0.0f, 0.5f * (world_max.y - world_min.y), 0.0f,
-							0.0f, 0.0f, 0.5f * (world_max.z - world_min.z),
-							0.5f * (world_max.x+world_min.x), 0.5f * (world_max.y+world_min.y), 0.5f * (world_max.z+world_min.z)
-						), (can_skip ? glm::u8vec4(0x88, 0x88, 0x88, 0xff) : glm::u8vec4(0x88, 0x88, 0x00, 0xff) ) );
-					}
 
 					if (can_skip) {
 						//AABBs do not overlap; skip detailed check:
@@ -232,23 +212,6 @@ void RollMode::update(float elapsed) {
 					if (did_collide) {
 						collided = true;
 					}
-
-					//draw to indicate result of check:
-					if (iter == 0 && DEBUG_draw_lines) {
-						glm::u8vec4 color = (did_collide ? glm::u8vec4(0x88, 0x00, 0x00, 0xff) : glm::u8vec4(0x88, 0x88, 0x00, 0xff));
-						if (DEBUG_show_geometry || (did_collide && DEBUG_show_collision)) {
-							DEBUG_draw_lines->draw(a,b,color);
-							DEBUG_draw_lines->draw(b,c,color);
-							DEBUG_draw_lines->draw(c,a,color);
-						}
-						//do a bit more to highlight colliding triangles (otherwise edges can be over-drawn by non-colliding triangles):
-						if (did_collide && DEBUG_show_collision) {
-							glm::vec3 m = (a + b + c) / 3.0f;
-							DEBUG_draw_lines->draw(glm::mix(a,m,0.1f),glm::mix(b,m,0.1f),color);
-							DEBUG_draw_lines->draw(glm::mix(b,m,0.1f),glm::mix(c,m,0.1f),color);
-							DEBUG_draw_lines->draw(glm::mix(c,m,0.1f),glm::mix(a,m,0.1f),color);
-						}
-					}
 				}
 			}
 
@@ -258,75 +221,13 @@ void RollMode::update(float elapsed) {
 				break;
 			} else {
 				position = glm::mix(sphere_sweep_from, sphere_sweep_to, collision_t);
-				float d = glm::dot(velocity, collision_out);
+				float d = glm::dot(ball_vel, collision_out);
 				if (d < 0.0f) {
-					velocity -= (1.1f * d) * collision_out;
-
-					//update rotational velocity to reflect relative motion:
-					glm::vec3 slip = glm::cross(rotational_velocity, collision_at - position) + velocity;
-					//DEBUG: std::cout << "slip: " << slip.x << " " << slip.y << " " << slip.z << std::endl;
-					/*if (DEBUG_draw_lines) {
-						DEBUG_draw_lines->draw(collision_at, collision_at + slip, glm::u8vec4(0x00, 0xff, 0x00, 0xff));
-					}*/
-					glm::vec3 change = glm::cross(slip, collision_at - position);
-					rotational_velocity += change;
+                    ball_vel -= (1.1f * d) * collision_out;
 				}
-				if (DEBUG_draw_lines && DEBUG_show_collision) {
-					//draw a little gadget at the collision point:
-					glm::vec3 p1;
-					if (std::abs(collision_out.x) <= std::abs(collision_out.y) && std::abs(collision_out.x) <= std::abs(collision_out.z)) {
-						p1 = glm::vec3(1.0f, 0.0f, 0.0f);
-					} else if (std::abs(collision_out.y) <= std::abs(collision_out.z)) {
-						p1 = glm::vec3(0.0f, 1.0f, 0.0f);
-					} else {
-						p1 = glm::vec3(0.0f, 0.0f, 1.0f);
-					}
-					p1 = glm::normalize(p1 - glm::dot(p1, collision_out)*collision_out);
-					glm::vec3 p2 = glm::cross(collision_out, p1);
-
-					float r = 0.25f;
-					glm::u8vec4 color = glm::u8vec4(0xff, 0x00, 0x00, 0xff);
-					DEBUG_draw_lines->draw(collision_at + r*p1, collision_at + r*p2, color);
-					DEBUG_draw_lines->draw(collision_at + r*p2, collision_at - r*p1, color);
-					DEBUG_draw_lines->draw(collision_at - r*p1, collision_at - r*p2, color);
-					DEBUG_draw_lines->draw(collision_at - r*p2, collision_at + r*p1, color);
-					DEBUG_draw_lines->draw(collision_at, collision_at + collision_out, color);
-				}
-				/*if (iter == 0) {
-					std::cout << collision_out.x << ", " << collision_out.y << ", " << collision_out.z
-					<< " / " << velocity.x << ", " << velocity.y << ", " << velocity.z << std::endl; //DEBUG
-				}*/
 				remain = (1.0f - collision_t) * remain;
 			}
 		}
-
-		//update player rotation (purely cosmetic):
-		rotation = glm::normalize(
-			  glm::angleAxis(elapsed * rotational_velocity.x, glm::vec3(1.0f, 0.0f, 0.0f))
-			* glm::angleAxis(elapsed * rotational_velocity.y, glm::vec3(0.0f, 1.0f, 0.0f))
-			* glm::angleAxis(elapsed * rotational_velocity.z, glm::vec3(0.0f, 0.0f, 1.0f))
-			* rotation
-		);
-	}
-
-	//goal update:
-	for (auto &goal : level.goals) {
-		goal.spin_acc += elapsed / 10.0f;
-		goal.spin_acc -= std::floor(goal.spin_acc);
-		goal.transform->rotation = glm::angleAxis(goal.spin_acc * 2.0f * 3.1415926f, glm::normalize(glm::vec3(1.0f)));
-
-		if (glm::length(goal.transform->make_local_to_world()[3] - level.player.transform->make_local_to_world()[3]) < 1.0f) {
-			won = true;
-		}
-	}
-
-	{ //camera update:
-		level.camera->transform->rotation =
-			glm::angleAxis( level.player.view_azimuth, glm::vec3(0.0f, 0.0f, 1.0f) )
-			* glm::angleAxis(-level.player.view_elevation + 0.5f * 3.1415926f, glm::vec3(1.0f, 0.0f, 0.0f) )
-		;
-		glm::vec3 in = level.camera->transform->rotation * glm::vec3(0.0f, 0.0f, -1.0f);
-		level.camera->transform->position = level.player.transform->position - 10.0f * in;
 	}
 }
 
@@ -338,8 +239,7 @@ void RollMode::draw(glm::uvec2 const &drawable_size) {
 	glEnable(GL_DEPTH_TEST);
 	glDepthFunc(GL_LEQUAL);
 
-	level.camera->aspect = drawable_size.x / float(drawable_size.y);
-	level.draw(*level.camera);
+	roll_scene->draw(roll_scene->cameras[level]);
 
 	{ //help text overlay:
 		glDisable(GL_DEPTH_TEST);
@@ -348,8 +248,9 @@ void RollMode::draw(glm::uvec2 const &drawable_size) {
 		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 		DrawSprites draw(*trade_font_atlas, glm::vec2(0,0), glm::vec2(320, 200), drawable_size, DrawSprites::AlignPixelPerfect);
 
+		if (!start)
 		{
-			std::string help_text = "wasd:move, mouse:camera, bksp: reset";
+			std::string help_text = "click to start";
 			glm::vec2 min, max;
 			draw.get_text_extents(help_text, glm::vec2(0.0f, 0.0f), 1.0f, &min, &max);
 			float x = std::round(160.0f - (0.5f * (max.x + min.x)));
@@ -357,37 +258,30 @@ void RollMode::draw(glm::uvec2 const &drawable_size) {
 			draw.draw_text(help_text, glm::vec2(x, 2.0f), 1.0f, glm::u8vec4(0xff,0xff,0xff,0xff));
 		}
 
-		if (won) {
-			std::string text = "Finished!";
-			glm::vec2 min, max;
-			draw.get_text_extents(text, glm::vec2(0.0f, 0.0f), 2.0f, &min, &max);
-			float x = std::round(160.0f - (0.5f * (max.x + min.x)));
-			draw.draw_text(text, glm::vec2(x, 100.0f), 2.0f, glm::u8vec4(0x00,0x00,0x00,0xff));
-			draw.draw_text(text, glm::vec2(x, 101.0f), 2.0f, glm::u8vec4(0xff,0xff,0xff,0xff));
-		}
-		if (won) {
-			std::string text = "press enter for next";
-			glm::vec2 min, max;
-			draw.get_text_extents(text, glm::vec2(0.0f, 0.0f), 1.0f, &min, &max);
-			float x = std::round(160.0f - (0.5f * (max.x + min.x)));
-			draw.draw_text(text, glm::vec2(x, 91.0f), 1.0f, glm::u8vec4(0x00,0x00,0x00,0xff));
-			draw.draw_text(text, glm::vec2(x, 92.0f), 1.0f, glm::u8vec4(0xdd,0xdd,0xdd,0xff));
-		}
+        std::ostringstream stringStream;
+        stringStream.precision(1);
+        stringStream.str("");
+        stringStream << "Time: " << std::fixed << ti << "s";
+
+        DrawSprites draw2(*trade_font_atlas, glm::vec2(0,0), glm::vec2(800,
+                                                                       600), drawable_size, DrawSprites::AlignSloppy);
+        draw2.draw_text(stringStream.str(), glm::vec2(20.f, 560.0f), 2.f,
+                        glm::u8vec4(0x00,0x00,0x00,0xff));
+
+        stringStream.precision(0);
+        stringStream.str("");
+        stringStream << "Score: " << score;
+        draw2.draw_text(stringStream.str(), glm::vec2(650.f, 560.0f), 2.f,
+                        glm::u8vec4(0x00,0x00,0x00,0xff));
+
+        if (ti == 0.f) {
+            stringStream.str("");
+            stringStream << "You got " << score << "!";
+            draw2.draw_text(stringStream.str(), glm::vec2(250.f, 300.0f), 4.f,
+                            glm::u8vec4(0xff,0x00,0x00,0xff));
+        }
 
 	}
-
-	if (DEBUG_draw_lines) { //DEBUG drawing:
-		//adjust world-to-clip matrix to current camera:
-		DEBUG_draw_lines->world_to_clip = level.camera->make_projection() * level.camera->transform->make_world_to_local();
-		//delete object (draws in destructor):
-		DEBUG_draw_lines.reset();
-	}
-
 
 	GL_ERRORS();
-}
-
-void RollMode::restart() {
-	level = start;
-	won = false;
 }

@@ -6,10 +6,10 @@ dist/README-libopus.txt
 dist/README-libpng.txt
 dist/README-opusfile.txt
 dist/SDL2.dll
-dist/roll
-dist/roll.exe
-dist/roll.ilk
-dist/roll.pdb
+dist/basketball
+dist/basketball.exe
+dist/basketball.ilk
+dist/basketball.pdb
 sprites/pack-sprites
 sprites/pack-sprites.exe
 sprites/pack-sprites.ilk

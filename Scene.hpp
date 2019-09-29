@@ -118,7 +118,7 @@ struct Scene {
 	//Scenes, of course, may have many of the above objects:
 	std::list< Transform > transforms;
 	std::list< Drawable > drawables;
-	std::list< Camera > cameras;
+	std::vector< Camera > cameras;
 	std::list< Lamp > lamps;
 
 	//The "draw" function provides a convenient way to pass all the things in a scene to OpenGL:
